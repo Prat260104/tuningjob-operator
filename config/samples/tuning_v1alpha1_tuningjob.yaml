@@ -1,0 +1,41 @@
+apiVersion: tuning.tuning.dev/v1alpha1
+kind: TuningJob
+metadata:
+  labels:
+    app.kubernetes.io/name: tuningjob-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: tuningjob-sample
+spec:
+  maxTrials: 10
+  maxFailedTrials: 3
+  parallelism: 2
+  goal: maximize
+  parameters:
+    - name: learning_rate
+      min: "0.0001"
+      max: "0.1"
+    - name: batch_size
+      values: ["16", "32", "64", "128"]
+    - name: optimizer
+      values: ["sgd", "adam", "rmsprop"]
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+            - name: trainer
+              image: python:3.11-slim
+              command:
+                - python
+                - -c
+                - |
+                  import os
+                  lr = os.environ.get('TUNING_PARAM_learning_rate')
+                  bs = os.environ.get('TUNING_PARAM_batch_size')
+                  opt = os.environ.get('TUNING_PARAM_optimizer')
+                  print(f"Training with lr={lr}, batch_size={bs}, optimizer={opt}")
+                  # Simulate training and output a metric
+                  import random
+                  accuracy = random.uniform(0.7, 0.95)
+                  print(f"Final accuracy: {accuracy}")
+          restartPolicy: Never

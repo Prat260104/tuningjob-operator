@@ -1,0 +1,223 @@
+# Realistic ML training hyperparameter tuning example.
+# This demonstrates a typical machine learning use case with standard hyperparameters.
+#
+# To use this example with your own training code:
+# 1. Replace 'your-registry/ml-training:latest' with your actual training image
+# 2. Your training script should:
+#    - Read hyperparameters from TUNING_PARAM_* environment variables
+#    - Train your model with those parameters
+#    - Compute a validation metric (e.g. accuracy, F1 score, validation loss)
+#    - Create a ConfigMap with the metric value (see result reporting section below)
+# 3. Adjust resource requests/limits based on your training workload
+# 4. Set appropriate goal (maximize for accuracy, minimize for loss)
+#
+# Apply with: kubectl apply -f examples/ml-training-tuning.yaml
+
+apiVersion: tuning.tuning.dev/v1alpha1
+kind: TuningJob
+metadata:
+  name: ml-training-tuning
+  namespace: default
+spec:
+  maxTrials: 20
+  parallelism: 2
+  maxFailedTrials: 5
+  goal: maximize  # maximize for accuracy/F1, or minimize for loss
+  
+  parameters:
+    # Learning rate for optimizer
+    - name: learning_rate
+      min: "0.0001"
+      max: "0.1"
+    
+    # Training batch size
+    - name: batch_size
+      min: "16"
+      max: "256"
+    
+    # Optimizer algorithm
+    - name: optimizer
+      values:
+        - sgd
+        - adam
+        - adamw
+        - rmsprop
+    
+    # Dropout rate for regularization
+    - name: dropout
+      min: "0.0"
+      max: "0.5"
+    
+    # Weight decay (L2 regularization)
+    - name: weight_decay
+      min: "0.0"
+      max: "0.01"
+  
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        metadata:
+          labels:
+            app: ml-training
+        spec:
+          restartPolicy: Never
+          serviceAccountName: tuning-trial-sa
+          
+          containers:
+            - name: trainer
+              # REPLACE THIS with your actual training image
+              # Example: gcr.io/my-project/pytorch-trainer:v1.0
+              image: your-registry/ml-training:latest
+              imagePullPolicy: Always
+              
+              # Hyperparameters are automatically injected as environment variables:
+              # TUNING_PARAM_learning_rate
+              # TUNING_PARAM_batch_size
+              # TUNING_PARAM_optimizer
+              # TUNING_PARAM_dropout
+              # TUNING_PARAM_weight_decay
+              
+              # Additional environment variables for your training script
+              env:
+                - name: DATASET_PATH
+                  value: "/data/training"
+                - name: MODEL_OUTPUT_PATH
+                  value: "/models/output"
+                - name: EPOCHS
+                  value: "10"
+              
+              # Resource requests/limits - adjust based on your workload
+              resources:
+                requests:
+                  memory: "4Gi"
+                  cpu: "2"
+                limits:
+                  memory: "8Gi"
+                  cpu: "4"
+                  # Uncomment if using GPU:
+                  # nvidia.com/gpu: "1"
+              
+              # Volumes for datasets and model storage
+              volumeMounts:
+                - name: dataset
+                  mountPath: /data/training
+                  readOnly: true
+                - name: model-output
+                  mountPath: /models/output
+          
+          volumes:
+            - name: dataset
+              # REPLACE with your dataset source
+              # Examples:
+              # - persistentVolumeClaim: {claimName: training-dataset-pvc}
+              # - nfs: {server: nfs.example.com, path: /datasets/training}
+              # - hostPath: {path: /mnt/data/training, type: Directory}
+              emptyDir: {}
+            
+            - name: model-output
+              emptyDir: {}
+
+---
+# Result Reporting Protocol:
+# Your training container must create a ConfigMap to report the trial metric.
+# The ConfigMap name must follow this format:
+#   <tuningjob-name>-trial-<trial-index>-result
+#
+# Example Python code to report results:
+#
+# import os
+# import subprocess
+# import json
+#
+# def report_metric(metric_value: float):
+#     """Report trial metric by creating a Kubernetes ConfigMap."""
+#     # Extract trial index from hostname (Job pod name)
+#     hostname = os.environ.get('HOSTNAME', '')
+#     trial_index = hostname.split('-trial-')[-1].rsplit('-', 1)[0]
+#     
+#     tuningjob_name = os.environ.get('TUNINGJOB_NAME', 'ml-training-tuning')
+#     namespace = os.environ.get('NAMESPACE', 'default')
+#     configmap_name = f"{tuningjob_name}-trial-{trial_index}-result"
+#     
+#     configmap = {
+#         "apiVersion": "v1",
+#         "kind": "ConfigMap",
+#         "metadata": {
+#             "name": configmap_name,
+#             "namespace": namespace
+#         },
+#         "data": {
+#             "metric": str(metric_value)
+#         }
+#     }
+#     
+#     # Apply ConfigMap using kubectl
+#     subprocess.run(
+#         ["kubectl", "apply", "-f", "-"],
+#         input=json.dumps(configmap).encode(),
+#         check=True
+#     )
+#     print(f"Reported metric {metric_value} to {configmap_name}")
+#
+#
+# # In your training loop:
+# def train():
+#     # Read hyperparameters from environment
+#     learning_rate = float(os.environ['TUNING_PARAM_learning_rate'])
+#     batch_size = int(float(os.environ['TUNING_PARAM_batch_size']))
+#     optimizer_name = os.environ['TUNING_PARAM_optimizer']
+#     dropout = float(os.environ['TUNING_PARAM_dropout'])
+#     weight_decay = float(os.environ['TUNING_PARAM_weight_decay'])
+#     
+#     # Train model with these hyperparameters
+#     model = create_model(dropout=dropout)
+#     optimizer = create_optimizer(model, optimizer_name, learning_rate, weight_decay)
+#     
+#     for epoch in range(num_epochs):
+#         train_epoch(model, optimizer, batch_size)
+#     
+#     # Evaluate model
+#     validation_accuracy = evaluate(model)
+#     
+#     # Report final metric
+#     report_metric(validation_accuracy)
+#
+# if __name__ == "__main__":
+#     train()
+
+---
+# ServiceAccount for trial Jobs (required for ConfigMap creation)
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tuning-trial-sa
+  namespace: default
+
+---
+# Role allowing ConfigMap operations
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tuning-trial-role
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "update", "patch"]
+
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tuning-trial-rolebinding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: tuning-trial-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: tuning-trial-role
+  apiGroup: rbac.authorization.k8s.io

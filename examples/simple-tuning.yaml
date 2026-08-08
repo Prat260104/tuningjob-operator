@@ -1,0 +1,133 @@
+# Simple end-to-end example of TuningJob with a dummy trial that reports a fake metric.
+# This is fully runnable on a local kind cluster to demonstrate the complete workflow:
+# parameter injection, trial execution, result reporting via ConfigMap, and best trial tracking.
+#
+# The trial Job runs a busybox container that:
+# 1. Reads TUNING_PARAM_* environment variables
+# 2. Computes a fake metric based on parameters
+# 3. Creates a result ConfigMap with the metric value
+#
+# Apply with: kubectl apply -f examples/simple-tuning.yaml
+# Watch with: kubectl get tuningjobs,jobs,configmaps -l tuning.dev/tuning-job=simple-tuning -w
+
+apiVersion: tuning.tuning.dev/v1alpha1
+kind: TuningJob
+metadata:
+  name: simple-tuning
+  namespace: default
+spec:
+  maxTrials: 5
+  goal: maximize
+  
+  parameters:
+    - name: learning_rate
+      min: "0.001"
+      max: "0.1"
+    
+    - name: batch_size
+      min: "16"
+      max: "128"
+    
+    - name: optimizer
+      values:
+        - sgd
+        - adam
+        - rmsprop
+  
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          restartPolicy: Never
+          serviceAccountName: tuning-trial-sa
+          containers:
+            - name: trial
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -e
+                  echo "=== Trial Parameters ==="
+                  echo "Learning Rate: $TUNING_PARAM_learning_rate"
+                  echo "Batch Size: $TUNING_PARAM_batch_size"
+                  echo "Optimizer: $TUNING_PARAM_optimizer"
+                  
+                  # Compute a fake metric based on parameters
+                  # In a real scenario, this would be actual model training
+                  lr_score=$(awk "BEGIN {print $TUNING_PARAM_learning_rate * 100}")
+                  bs_score=$(awk "BEGIN {print $TUNING_PARAM_batch_size / 10}")
+                  
+                  # Simple scoring: prefer adam, mid-range batch size, higher learning rate
+                  opt_score=50
+                  if [ "$TUNING_PARAM_optimizer" = "adam" ]; then
+                    opt_score=100
+                  elif [ "$TUNING_PARAM_optimizer" = "rmsprop" ]; then
+                    opt_score=75
+                  fi
+                  
+                  # Combine scores with some randomness
+                  metric=$(awk "BEGIN {print ($lr_score + $bs_score + $opt_score) / 3}")
+                  
+                  echo "=== Computed Metric ==="
+                  echo "Metric: $metric"
+                  
+                  # Extract trial index from Job name (format: <tuningjob>-trial-<index>)
+                  TRIAL_INDEX=$(echo $HOSTNAME | grep -o 'trial-[0-9]*' | cut -d'-' -f2)
+                  TUNINGJOB_NAME="simple-tuning"
+                  CONFIGMAP_NAME="${TUNINGJOB_NAME}-trial-${TRIAL_INDEX}-result"
+                  
+                  echo "=== Reporting Result ==="
+                  echo "Creating ConfigMap: $CONFIGMAP_NAME"
+                  
+                  # Create result ConfigMap
+                  cat <<EOF | kubectl apply -f -
+                  apiVersion: v1
+                  kind: ConfigMap
+                  metadata:
+                    name: $CONFIGMAP_NAME
+                    namespace: default
+                    labels:
+                      tuning.dev/tuning-job: simple-tuning
+                  data:
+                    metric: "$metric"
+                  EOF
+                  
+                  echo "Trial completed successfully!"
+
+---
+# ServiceAccount for trial Jobs to create ConfigMaps
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: tuning-trial-sa
+  namespace: default
+
+---
+# Role allowing ConfigMap creation
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: tuning-trial-role
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "get", "update", "patch"]
+
+---
+# RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: tuning-trial-rolebinding
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: tuning-trial-sa
+    namespace: default
+roleRef:
+  kind: Role
+  name: tuning-trial-role
+  apiGroup: rbac.authorization.k8s.io
