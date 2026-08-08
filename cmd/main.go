@@ -183,8 +183,9 @@ func main() {
 	}
 
 	if err := (&controller.TuningJobReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+		// nolint:staticcheck // GetEventRecorder returns incompatible type
 		Recorder:      mgr.GetEventRecorderFor("tuningjob-controller"),
 		Sampler:       sampling.NewSampler(nil),
 		SuggesterFunc: controller.NewProductionSuggester(suggesterBinaryPath),
