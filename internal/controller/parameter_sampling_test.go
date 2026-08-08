@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -54,14 +55,7 @@ func TestSampleParameter_Categorical(t *testing.T) {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
-	found := false
-	for _, v := range param.Values {
-		if v == value {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(param.Values, value) {
 		t.Errorf("sampled value %s not in allowed values %v", value, param.Values)
 	}
 

@@ -117,7 +117,9 @@ func TestSuggesterBinary_RealExec(t *testing.T) {
 	if output, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("failed to build suggester binary: %v\n%s", err, output)
 	}
-	defer exec.Command("rm", "-f", "suggester-test").Run()
+	defer func() {
+		_ = exec.Command("rm", "-f", "suggester-test").Run()
+	}()
 
 	min := "0.001"
 	max := "0.1"

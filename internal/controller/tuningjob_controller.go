@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strconv"
 	"time"
 
@@ -38,6 +39,11 @@ import (
 
 	tuningv1alpha1 "github.com/Prat260104/tuningjob-operator/api/v1alpha1"
 	"github.com/Prat260104/tuningjob-operator/internal/sampling"
+)
+
+const (
+	GoalMaximize = "maximize"
+	GoalMinimize = "minimize"
 )
 
 type TuningJobReconciler struct {
@@ -80,31 +86,31 @@ const (
 // +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
 
 func (r *TuningJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	var tuningJob tuningv1alpha1.TuningJob
 	if err := r.Get(ctx, req.NamespacedName, &tuningJob); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		log.Error(err, "Failed to get TuningJob")
+		logger.Error(err, "Failed to get TuningJob")
 		return ctrl.Result{}, err
 	}
 
 	defer func() {
 		if err := r.Status().Update(ctx, &tuningJob); err != nil {
-			log.Error(err, "Failed to update TuningJob status")
+			logger.Error(err, "Failed to update TuningJob status")
 		}
 	}()
 
-	if tuningJob.Spec.Goal != "maximize" && tuningJob.Spec.Goal != "minimize" {
-		log.Error(nil, "Invalid goal", "goal", tuningJob.Spec.Goal)
-		return ctrl.Result{}, fmt.Errorf("goal must be either 'maximize' or 'minimize', got %s", tuningJob.Spec.Goal)
+	if tuningJob.Spec.Goal != GoalMaximize && tuningJob.Spec.Goal != GoalMinimize {
+		logger.Error(nil, "Invalid goal", "goal", tuningJob.Spec.Goal)
+		return ctrl.Result{}, fmt.Errorf("goal must be either '%s' or '%s', got %s", GoalMaximize, GoalMinimize, tuningJob.Spec.Goal)
 	}
 
 	var childJobs batchv1.JobList
 	if err := r.List(ctx, &childJobs, client.InNamespace(req.Namespace), client.MatchingFields{jobOwnerKey: req.Name}); err != nil {
-		log.Error(err, "Failed to list child Jobs")
+		logger.Error(err, "Failed to list child Jobs")
 		return ctrl.Result{}, err
 	}
 
@@ -120,7 +126,7 @@ func (r *TuningJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		case batchv1.JobComplete:
 			succeededJobs = append(succeededJobs, job.Name)
 			if err := r.processCompletedTrial(ctx, &tuningJob, &job); err != nil {
-				log.Error(err, "Failed to process completed trial", "job", job.Name)
+				logger.Error(err, "Failed to process completed trial", "job", job.Name)
 			}
 		case batchv1.JobFailed:
 			failedJobs = append(failedJobs, job.Name)
@@ -161,16 +167,16 @@ func (r *TuningJobReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	trialIndex := tuningJob.Status.TrialsLaunched
 	job, err := r.constructJobFromTemplate(ctx, &tuningJob, &childJobs, trialIndex)
 	if err != nil {
-		log.Error(err, "Failed to construct Job from template")
+		logger.Error(err, "Failed to construct Job from template")
 		return ctrl.Result{}, err
 	}
 
 	if err := r.Create(ctx, job); err != nil {
-		log.Error(err, "Failed to create Job", "job", job.Name)
+		logger.Error(err, "Failed to create Job", "job", job.Name)
 		return ctrl.Result{}, err
 	}
 
-	log.Info("Created Job", "job", job.Name, "trial", trialIndex)
+	logger.Info("Created Job", "job", job.Name, "trial", trialIndex)
 	r.Recorder.Eventf(&tuningJob, corev1.EventTypeNormal, "JobCreated", "Created trial Job %s", job.Name)
 
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
@@ -189,25 +195,18 @@ func (r *TuningJobReconciler) constructJobFromTemplate(ctx context.Context, tuni
 		Spec: *tuningJob.Spec.JobTemplate.Spec.DeepCopy(),
 	}
 
-	for k, v := range tuningJob.Spec.JobTemplate.Annotations {
-		job.Annotations[k] = v
-	}
-	for k, v := range tuningJob.Spec.JobTemplate.Labels {
-		job.Labels[k] = v
-	}
+	maps.Copy(job.Annotations, tuningJob.Spec.JobTemplate.Annotations)
+	maps.Copy(job.Labels, tuningJob.Spec.JobTemplate.Labels)
 	job.Labels["tuning.dev/tuning-job"] = tuningJob.Name
 	job.Labels["tuning.dev/trial-index"] = fmt.Sprintf("%d", trialIndex)
 
 	if len(tuningJob.Spec.Parameters) > 0 {
 		var assignments sampling.Assignment
 		var err error
-		log := log.FromContext(ctx)
+		logger := log.FromContext(ctx)
 
 		if r.SuggesterFunc != nil {
-			pastTrials, err := r.collectPastTrials(ctx, tuningJob, childJobs.Items)
-			if err != nil {
-				return nil, fmt.Errorf("failed to collect past trials: %w", err)
-			}
+			pastTrials := r.collectPastTrials(ctx, tuningJob, childJobs.Items)
 
 			input := SuggesterInput{
 				Parameters: tuningJob.Spec.Parameters,
@@ -221,7 +220,7 @@ func (r *TuningJobReconciler) constructJobFromTemplate(ctx context.Context, tuni
 			}
 			assignments = output.Parameters
 		} else {
-			log.Info("SuggesterFunc not configured, falling back to random sampling", "tuningjob", tuningJob.Name)
+			logger.Info("SuggesterFunc not configured, falling back to random sampling", "tuningjob", tuningJob.Name)
 			assignments, err = r.Sampler.SampleParameters(tuningJob.Spec.Parameters)
 			if err != nil {
 				return nil, fmt.Errorf("failed to sample parameters: %w", err)
@@ -277,7 +276,7 @@ func isJobFinished(job *batchv1.Job) (bool, batchv1.JobConditionType) {
 // Note: re-reads and re-compares already-processed trials on every reconcile; harmless due to strict > / < comparison
 // in isBetter, but not optimized to skip already-recorded results.
 func (r *TuningJobReconciler) processCompletedTrial(ctx context.Context, tuningJob *tuningv1alpha1.TuningJob, job *batchv1.Job) error {
-	log := log.FromContext(ctx)
+	logger := log.FromContext(ctx)
 
 	trialIndex := job.Labels["tuning.dev/trial-index"]
 	configMapName := fmt.Sprintf("%s-trial-%s-result", tuningJob.Name, trialIndex)
@@ -290,7 +289,7 @@ func (r *TuningJobReconciler) processCompletedTrial(ctx context.Context, tuningJ
 
 	if err := r.Get(ctx, cmKey, &resultCM); err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("Result ConfigMap not found for trial", "job", job.Name, "configmap", configMapName)
+			logger.Info("Result ConfigMap not found for trial", "job", job.Name, "configmap", configMapName)
 			return nil
 		}
 		return fmt.Errorf("failed to get result ConfigMap: %w", err)
@@ -298,13 +297,13 @@ func (r *TuningJobReconciler) processCompletedTrial(ctx context.Context, tuningJ
 
 	metricStr, ok := resultCM.Data[ResultConfigMapKey]
 	if !ok {
-		log.Info("Result ConfigMap missing metric key", "job", job.Name, "configmap", configMapName)
+		logger.Info("Result ConfigMap missing metric key", "job", job.Name, "configmap", configMapName)
 		return nil
 	}
 
 	metricValue, err := strconv.ParseFloat(metricStr, 64)
 	if err != nil {
-		log.Error(err, "Failed to parse metric value", "job", job.Name, "metric", metricStr)
+		logger.Error(err, "Failed to parse metric value", "job", job.Name, "metric", metricStr)
 		return nil
 	}
 
@@ -312,7 +311,7 @@ func (r *TuningJobReconciler) processCompletedTrial(ctx context.Context, tuningJ
 	var parameters map[string]string
 	if parametersJSON != "" {
 		if err := json.Unmarshal([]byte(parametersJSON), &parameters); err != nil {
-			log.Error(err, "Failed to unmarshal parameters from job annotation", "job", job.Name)
+			logger.Error(err, "Failed to unmarshal parameters from job annotation", "job", job.Name)
 			return nil
 		}
 	}
@@ -323,15 +322,15 @@ func (r *TuningJobReconciler) processCompletedTrial(ctx context.Context, tuningJ
 		Parameters:  parameters,
 	}
 
-	if shouldUpdateBestTrial(tuningJob, newTrial, metricValue) {
+	if shouldUpdateBestTrial(tuningJob, metricValue) {
 		tuningJob.Status.BestTrial = newTrial
-		log.Info("Updated best trial", "job", job.Name, "metric", metricStr)
+		logger.Info("Updated best trial", "job", job.Name, "metric", metricStr)
 	}
 
 	return nil
 }
 
-func (r *TuningJobReconciler) collectPastTrials(ctx context.Context, tuningJob *tuningv1alpha1.TuningJob, jobs []batchv1.Job) ([]PastTrial, error) {
+func (r *TuningJobReconciler) collectPastTrials(ctx context.Context, tuningJob *tuningv1alpha1.TuningJob, jobs []batchv1.Job) []PastTrial {
 	var pastTrials []PastTrial
 
 	for _, job := range jobs {
@@ -372,10 +371,10 @@ func (r *TuningJobReconciler) collectPastTrials(ctx context.Context, tuningJob *
 		})
 	}
 
-	return pastTrials, nil
+	return pastTrials
 }
 
-func shouldUpdateBestTrial(tuningJob *tuningv1alpha1.TuningJob, newTrial *tuningv1alpha1.TrialResult, newMetric float64) bool {
+func shouldUpdateBestTrial(tuningJob *tuningv1alpha1.TuningJob, newMetric float64) bool {
 	if tuningJob.Status.BestTrial == nil {
 		return true
 	}
@@ -390,7 +389,7 @@ func shouldUpdateBestTrial(tuningJob *tuningv1alpha1.TuningJob, newTrial *tuning
 }
 
 func isBetter(newValue, currentValue float64, goal string) bool {
-	if goal == "maximize" {
+	if goal == GoalMaximize {
 		return newValue > currentValue
 	}
 	return newValue < currentValue

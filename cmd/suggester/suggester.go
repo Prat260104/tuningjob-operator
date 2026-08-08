@@ -28,6 +28,11 @@ import (
 	"github.com/Prat260104/tuningjob-operator/internal/sampling"
 )
 
+const (
+	GoalMaximize = "maximize"
+	GoalMinimize = "minimize"
+)
+
 type PastTrial struct {
 	Parameters map[string]string `json:"parameters"`
 	Metric     string            `json:"metric"`
@@ -48,8 +53,9 @@ type SuggestResponse struct {
 // Future algorithms (e.g. Bayesian optimization) can use this same interface without
 // changing the wire format.
 func Suggest(req SuggestRequest) (SuggestResponse, error) {
-	if req.Goal != "maximize" && req.Goal != "minimize" {
-		return SuggestResponse{}, fmt.Errorf("invalid goal: must be 'maximize' or 'minimize', got %s", req.Goal)
+	if req.Goal != GoalMaximize && req.Goal != GoalMinimize {
+		return SuggestResponse{}, fmt.Errorf(
+			"invalid goal: must be '%s' or '%s', got %s", GoalMaximize, GoalMinimize, req.Goal)
 	}
 
 	sampler := sampling.NewSampler(rand.New(rand.NewSource(rand.Int63())))

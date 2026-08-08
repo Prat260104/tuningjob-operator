@@ -76,12 +76,7 @@ func TestShouldUpdateBestTrial_NoBestYet(t *testing.T) {
 		},
 	}
 
-	newTrial := &tuningv1alpha1.TrialResult{
-		TrialName:   "test-trial-0",
-		MetricValue: "0.85",
-	}
-
-	result := shouldUpdateBestTrial(tuningJob, newTrial, 0.85)
+	result := shouldUpdateBestTrial(tuningJob, 0.85)
 	if !result {
 		t.Error("should update when no best trial exists")
 	}
@@ -113,12 +108,7 @@ func TestShouldUpdateBestTrial_Maximize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			newTrial := &tuningv1alpha1.TrialResult{
-				TrialName:   "test-trial-new",
-				MetricValue: tt.metricStr,
-			}
-
-			result := shouldUpdateBestTrial(tuningJob, newTrial, tt.newMetric)
+			result := shouldUpdateBestTrial(tuningJob, tt.newMetric)
 			if result != tt.shouldUpdate {
 				t.Errorf("shouldUpdateBestTrial with metric %f = %v, want %v", tt.newMetric, result, tt.shouldUpdate)
 			}
@@ -152,12 +142,7 @@ func TestShouldUpdateBestTrial_Minimize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			newTrial := &tuningv1alpha1.TrialResult{
-				TrialName:   "test-trial-new",
-				MetricValue: tt.metricStr,
-			}
-
-			result := shouldUpdateBestTrial(tuningJob, newTrial, tt.newMetric)
+			result := shouldUpdateBestTrial(tuningJob, tt.newMetric)
 			if result != tt.shouldUpdate {
 				t.Errorf("shouldUpdateBestTrial with metric %f = %v, want %v", tt.newMetric, result, tt.shouldUpdate)
 			}
@@ -178,12 +163,7 @@ func TestShouldUpdateBestTrial_InvalidCurrentMetric(t *testing.T) {
 		},
 	}
 
-	newTrial := &tuningv1alpha1.TrialResult{
-		TrialName:   "test-trial-new",
-		MetricValue: "0.85",
-	}
-
-	result := shouldUpdateBestTrial(tuningJob, newTrial, 0.85)
+	result := shouldUpdateBestTrial(tuningJob, 0.85)
 	if !result {
 		t.Error("should update when current metric is invalid")
 	}

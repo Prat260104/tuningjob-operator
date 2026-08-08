@@ -303,10 +303,7 @@ func TestCollectPastTrials_EmptyWithNoCompletedJobs(t *testing.T) {
 		},
 	}
 
-	pastTrials, err := reconciler.collectPastTrials(context.Background(), tuningJob, jobs)
-	if err != nil {
-		t.Fatalf("expected no error, got %v", err)
-	}
+	pastTrials := reconciler.collectPastTrials(context.Background(), tuningJob, jobs)
 
 	if len(pastTrials) != 0 {
 		t.Errorf("expected 0 past trials for incomplete jobs, got %d", len(pastTrials))
